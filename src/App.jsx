@@ -3,6 +3,7 @@ import { useState } from "react";
 import { validateLogin } from "./login.js";
 import "./App.css";
 import Register from "./Register.jsx";
+import ForgotPassword from "./ForgotPassword.jsx";
 
 function Icon({ type, size = 22 }) {
   const props = {
@@ -80,6 +81,7 @@ export default function App() {
   const [remember, setRemember] = useState(false);
   const [message, setMessage] = useState("");
   const [showRegister, setShowRegister] = useState(false);
+  const [showForgot, setShowForgot] = useState(false);
 
   function handleLogin(event) {
     event.preventDefault();
@@ -104,6 +106,13 @@ export default function App() {
   return (
     <Register
       onBack={() => setShowRegister(false)}
+    />
+  );
+}
+  if (showForgot) {
+  return (
+    <ForgotPassword
+      onBack={() => setShowForgot(false)}
     />
   );
 }
@@ -274,7 +283,7 @@ export default function App() {
               <button
                 type="button"
                 className="text-link"
-                onClick={() => showComingSoon("Forgot password")}
+                onClick={() =>  setShowForgot(true)}
               >
                 Forgot password?
               </button>
