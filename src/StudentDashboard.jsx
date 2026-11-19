@@ -1088,58 +1088,76 @@ export default function StudentDashboard({ user, profile, onLogout }) {
   }, []);
 
   // 2. Fetch existing incidents reported by this student
-  async function loadMyReports() {
-    if (!user?.id) return;
-    try {
-      const { data, error } = await supabase
-        .from("incidents")
-        .select("*, campus_locations(name)")
-        .eq("reported_by", user.id)
-        .order("created_at", { ascending: false });
-
-      if (!error && data) {
-        const mapped = data.map((inc) => ({
-          id: `SHY-${inc.id.slice(0, 4).toUpperCase()}`,
-          realId: inc.id,
-          type: inc.type,
-          zone: inc.campus_locations?.name || inc.location_id || "Campus",
-          time: new Date(inc.created_at).toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-          }),
-          priority: inc.severity || "Urgent",
-          status: inc.status || "Reported",
-          description: inc.description,
-          icon:
-            emergencyTypes.find((item) => item.name === inc.type)?.icon ||
-            "🚨",
-        }));
-        setMyReports(mapped);
-      }
-    } catch (err) {
-      console.warn("Could not load my reports:", err);
-    }
-  }
-
   useEffect(() => {
-    Promise.resolve().then(() => loadMyReports());
+    if (!user?.id) return;
+
+    let isMounted = true;
+
+    // Fetch existing incidents reported by this student
+    async function loadMyReports() {
+      try {
+        const { data, error } = await supabase
+          .from("incidents")
+          .select("*, campus_locations(name)")
+          .eq("reported_by", user.id)
+          .order("created_at", { ascending: false });
+
+        if (error) throw error;
+
+        if (isMounted && data) {
+          const mapped = data.map((inc) => ({
+            id: `SHY-${inc.id.slice(0, 4).toUpperCase()}`,
+            realId: inc.id,
+            type: inc.type,
+            zone:
+              inc.campus_locations?.name ||
+              inc.location_id ||
+              "Campus",
+            time: new Date(inc.created_at).toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            }),
+            priority: inc.severity || "Urgent",
+            status: inc.status || "Reported",
+            description: inc.description,
+            icon:
+              emergencyTypes.find(
+                (item) => item.name === inc.type
+              )?.icon || "🚨",
+          }));
+
+          setMyReports(mapped);
+        }
+      } catch (err) {
+        console.warn("Could not load my reports:", err);
+      }
+    }
+
+    // Initial fetch
+    loadMyReports();
 
     // Realtime listener for incident status changes
     const channel = supabase
       .channel("student-incidents")
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "incidents" },
+        {
+          event: "*",
+          schema: "public",
+          table: "incidents",
+        },
         () => {
           loadMyReports();
         }
       )
       .subscribe();
 
+    // Cleanup
     return () => {
+      isMounted = false;
       supabase.removeChannel(channel);
     };
-  }, [user]);
+  }, [user?.id]);
 
   const navigation = [
     { name: "Dashboard", icon: "⌂" },
