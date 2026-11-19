@@ -1,5 +1,6 @@
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { supabase } from "./supabase_cline";
 import "./ResponderDashboard.css";
 
 const initialTasks = [
@@ -49,12 +50,81 @@ const statusOptions = [
   "Resolved",
 ];
 
-export default function ResponderDashboard() {
+export default function ResponderDashboard({ user, profile, onLogout }) {
   const [page, setPage] = useState("My Overview");
   const [tasks, setTasks] = useState(initialTasks);
   const [available, setAvailable] = useState(true);
   const [filter, setFilter] = useState("All");
   const [notice, setNotice] = useState("");
+
+  const responderName = profile?.full_name || user?.user_metadata?.full_name || user?.email?.split("@")[0] || "Responder Staff";
+  const responderInitials = responderName
+    .split(" ")
+    .filter(Boolean)
+    .map((n) => n[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2) || "RS";
+
+  // 1. Fetch live assigned & reported incidents from Supabase
+  async function loadResponderTasks() {
+    try {
+      const { data, error } = await supabase
+        .from("incidents")
+        .select(`
+          id,
+          type,
+          description,
+          severity,
+          status,
+          created_at,
+          location_id,
+          campus_locations(name),
+          profiles:reported_by(full_name, email)
+        `)
+        .order("created_at", { ascending: false });
+
+      if (!error && data && data.length > 0) {
+        const mapped = data.map((inc) => ({
+          id: `SHY-${inc.id.slice(0, 4).toUpperCase()}`,
+          realId: inc.id,
+          type: inc.type || "General Emergency",
+          location: inc.campus_locations?.name || inc.location_id || "Campus",
+          reporter: inc.profiles?.full_name || inc.profiles?.email || "Student",
+          time: new Date(inc.created_at).toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+          priority: inc.severity || "Urgent",
+          status: inc.status === "Reported" ? "Assigned" : inc.status || "Assigned",
+          description: inc.description || "Emergency reported on campus.",
+        }));
+        setTasks(mapped);
+      }
+    } catch (err) {
+      console.warn("Could not load responder tasks from Supabase:", err);
+    }
+  }
+
+  useEffect(() => {
+    loadResponderTasks();
+
+    // Realtime listener for incoming assignments
+    const channel = supabase
+      .channel("responder-incidents")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "incidents" },
+        () => {
+          loadResponderTasks();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
 
   const pending = tasks.filter(
     (task) => task.status !== "Resolved"
@@ -70,10 +140,36 @@ export default function ResponderDashboard() {
       task.status !== "Resolved"
   ).length;
 
-  function updateTask(id, status) {
+  // 2. Real-time update in Supabase
+  async function updateTask(id, status) {
+    const targetTask = tasks.find((t) => t.id === id || t.realId === id);
+    const realId = targetTask?.realId;
+
+    if (realId) {
+      try {
+        await supabase
+          .from("incidents")
+          .update({ status, updated_at: new Date().toISOString() })
+          .eq("id", realId);
+
+        // Also record to incident_status_logs
+        await supabase
+          .from("incident_status_logs")
+          .insert({
+            incident_id: realId,
+            changed_by: user?.id,
+            new_status: status,
+          })
+          .select()
+          .catch(() => {});
+      } catch (err) {
+        console.warn("Failed to persist task status update:", err);
+      }
+    }
+
     setTasks((previous) =>
       previous.map((task) =>
-        task.id === id ? { ...task, status } : task
+        task.id === id || task.realId === id ? { ...task, status } : task
       )
     );
 
@@ -107,9 +203,9 @@ export default function ResponderDashboard() {
         </div>
 
         <div className="rd-profile">
-          <div className="rd-profile-avatar">RS</div>
+          <div className="rd-profile-avatar">{responderInitials}</div>
           <div>
-            <h3>Responder Staff</h3>
+            <h3>{responderName}</h3>
             <p>Emergency Response Team</p>
           </div>
           <span className="rd-profile-dot" />
@@ -139,8 +235,30 @@ export default function ResponderDashboard() {
           <p>Every second matters. Respond quickly and keep the campus safe.</p>
         </div>
 
-        <div className="rd-sidebar-footer">
-          <span /> Secure responder access
+        <div className="rd-sidebar-footer" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+          <div><span /> Secure responder access</div>
+          {onLogout && (
+            <button
+              type="button"
+              onClick={onLogout}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: "100%",
+                padding: "8px",
+                background: "rgba(239, 68, 68, 0.12)",
+                color: "#f87171",
+                border: "1px solid rgba(239, 68, 68, 0.25)",
+                borderRadius: "6px",
+                cursor: "pointer",
+                fontWeight: "600",
+                fontSize: "0.82rem"
+              }}
+            >
+              Sign Out
+            </button>
+          )}
         </div>
       </aside>
 
@@ -153,7 +271,26 @@ export default function ResponderDashboard() {
 
           <div className="rd-top-right">
             <span className="rd-shift-tag">● Active Shift</span>
-            <div className="rd-top-avatar">RS</div>
+            <div className="rd-top-avatar">{responderInitials}</div>
+            {onLogout && (
+              <button
+                type="button"
+                onClick={onLogout}
+                style={{
+                  padding: "6px 12px",
+                  background: "rgba(239, 68, 68, 0.1)",
+                  color: "#dc2626",
+                  border: "1px solid rgba(239, 68, 68, 0.2)",
+                  borderRadius: "6px",
+                  cursor: "pointer",
+                  fontWeight: "600",
+                  fontSize: "0.8rem",
+                  marginLeft: "8px"
+                }}
+              >
+                Logout
+              </button>
+            )}
           </div>
         </header>
 

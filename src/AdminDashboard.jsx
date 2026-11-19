@@ -1,5 +1,6 @@
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
+import { supabase } from "./supabase_cline";
 import "./AdminDashboard.css";
 
 const initialIncidents = [
@@ -26,12 +27,96 @@ const menuItems = [
   ["Analytics", "▥"],
 ];
 
-export default function AdminDashboard() {
+export default function AdminDashboard({ user, onLogout }) {
   const [page, setPage] = useState("Overview");
   const [incidents, setIncidents] = useState(initialIncidents);
+  const [respondersList, setRespondersList] = useState(responders);
   const [filter, setFilter] = useState("All");
   const [search, setSearch] = useState("");
   const [notice, setNotice] = useState("");
+
+  // 1. Fetch live incidents from Supabase
+  async function loadAdminIncidents() {
+    try {
+      const { data, error } = await supabase
+        .from("incidents")
+        .select(`
+          id,
+          type,
+          description,
+          severity,
+          status,
+          created_at,
+          location_id,
+          campus_locations(name),
+          profiles:reported_by(full_name, email)
+        `)
+        .order("created_at", { ascending: false });
+
+      if (!error && data && data.length > 0) {
+        const mapped = data.map((inc) => ({
+          id: `SHY-${inc.id.slice(0, 4).toUpperCase()}`,
+          realId: inc.id,
+          type: inc.type || "General",
+          zone: inc.campus_locations?.name || inc.location_id || "Campus",
+          reporter: inc.profiles?.full_name || inc.profiles?.email || "Student",
+          time: new Date(inc.created_at).toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+          priority: inc.severity || "Urgent",
+          status: inc.status || "Reported",
+          description: inc.description,
+        }));
+        setIncidents(mapped);
+      }
+    } catch (err) {
+      console.warn("Failed to load incidents from Supabase:", err);
+    }
+  }
+
+  // 2. Fetch live responders from Supabase
+  async function loadResponders() {
+    try {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("*")
+        .eq("role", "responder");
+
+      if (!error && data && data.length > 0) {
+        setRespondersList(data);
+      }
+    } catch (err) {
+      console.warn("Failed to load responders:", err);
+    }
+  }
+
+  useEffect(() => {
+    async function initializeDashboard() {
+      await Promise.all([
+        loadAdminIncidents(),
+        loadResponders(),
+      ]);
+    }
+
+    initializeDashboard();
+
+    // Realtime listener for incoming incidents & status updates
+    const channel = supabase
+      .channel("admin-incidents")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "incidents" },
+        () => {
+          loadAdminIncidents();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
 
   const urgentCount = incidents.filter(
     (item) => item.priority === "Urgent" && item.status !== "Resolved"
@@ -59,13 +144,87 @@ export default function AdminDashboard() {
     });
   }, [incidents, filter, search]);
 
-  function updateStatus(id, newStatus) {
+  // Update status in Supabase and local state
+  async function updateStatus(id, newStatus) {
+    const incItem = incidents.find((i) => i.id === id || i.realId === id);
+    const realId = incItem?.realId;
+
+    if (realId) {
+      try {
+        const { error } = await supabase
+          .from("incidents")
+          .update({ status: newStatus, updated_at: new Date().toISOString() })
+          .eq("id", realId);
+
+        if (error) {
+          console.warn("Could not update incident status in Supabase:", error.message);
+        }
+
+        // Try logging to incident_status_logs
+        await supabase
+          .from("incident_status_logs")
+          .insert({
+            incident_id: realId,
+            changed_by: user?.id,
+            new_status: newStatus,
+          })
+          .select()
+          .catch(() => { });
+      } catch (err) {
+        console.warn("Status update log error:", err);
+      }
+    }
+
     setIncidents((previous) =>
       previous.map((item) =>
-        item.id === id ? { ...item, status: newStatus } : item
+        item.id === id || item.realId === id
+          ? { ...item, status: newStatus }
+          : item
       )
     );
     setNotice(`${id} status updated to ${newStatus}.`);
+  }
+
+  // Assign responder to an incident
+  async function assignResponder(id, responderId) {
+    if (!responderId) return;
+
+    const incItem = incidents.find((i) => i.id === id || i.realId === id);
+    const realId = incItem?.realId;
+
+    if (realId && user?.id) {
+      try {
+        const { error } = await supabase
+          .from("incident_assignments")
+          .insert({
+            incident_id: realId,
+            responder_id: responderId,
+            assigned_by: user.id,
+            assignment_status: "assigned",
+            assigned_at: new Date().toISOString(),
+          });
+
+        if (error) {
+          console.warn("Assignment insert error:", error.message);
+        } else {
+          await supabase
+            .from("incidents")
+            .update({ status: "Assigned", updated_at: new Date().toISOString() })
+            .eq("id", realId);
+        }
+      } catch (err) {
+        console.warn("Assignment error:", err);
+      }
+    }
+
+    setIncidents((previous) =>
+      previous.map((item) =>
+        item.id === id || item.realId === id
+          ? { ...item, status: "Assigned", assignedTo: responderId }
+          : item
+      )
+    );
+    setNotice(`Responder assigned to ${id}!`);
   }
 
   function navigate(name) {
@@ -122,8 +281,30 @@ export default function AdminDashboard() {
           </button>
         </div>
 
-        <div className="ad-sidebar-footer">
-          <span /> Admin access · Demo mode
+        <div className="ad-sidebar-footer" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+          <div><span /> Admin access · Demo mode</div>
+          {onLogout && (
+            <button
+              type="button"
+              onClick={onLogout}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: "100%",
+                padding: "8px",
+                background: "rgba(239, 68, 68, 0.12)",
+                color: "#f87171",
+                border: "1px solid rgba(239, 68, 68, 0.25)",
+                borderRadius: "6px",
+                cursor: "pointer",
+                fontWeight: "600",
+                fontSize: "0.82rem"
+              }}
+            >
+              Sign Out
+            </button>
+          )}
         </div>
       </aside>
 
@@ -143,6 +324,25 @@ export default function AdminDashboard() {
               ♧
             </button>
             <div className="ad-top-avatar">AD</div>
+            {onLogout && (
+              <button
+                type="button"
+                onClick={onLogout}
+                style={{
+                  padding: "6px 12px",
+                  background: "rgba(239, 68, 68, 0.1)",
+                  color: "#dc2626",
+                  border: "1px solid rgba(239, 68, 68, 0.2)",
+                  borderRadius: "6px",
+                  cursor: "pointer",
+                  fontWeight: "600",
+                  fontSize: "0.8rem",
+                  marginLeft: "4px"
+                }}
+              >
+                Logout
+              </button>
+            )}
           </div>
         </header>
 
@@ -255,6 +455,8 @@ export default function AdminDashboard() {
               <IncidentTable
                 incidents={incidents.slice(0, 4)}
                 onUpdate={updateStatus}
+                onAssign={assignResponder}
+                respondersList={respondersList}
               />
             </section>
           </>
@@ -281,7 +483,12 @@ export default function AdminDashboard() {
                   <option>Resolved</option>
                 </select>
               </div>
-              <IncidentTable incidents={filteredIncidents} onUpdate={updateStatus} />
+              <IncidentTable
+                incidents={filteredIncidents}
+                onUpdate={updateStatus}
+                onAssign={assignResponder}
+                respondersList={respondersList}
+              />
               {filteredIncidents.length === 0 && (
                 <p className="ad-empty">No matching incidents found.</p>
               )}
@@ -296,7 +503,12 @@ export default function AdminDashboard() {
             subtitle="Reports submitted by students in this prototype."
           >
             <div className="ad-panel">
-              <IncidentTable incidents={incidents} onUpdate={updateStatus} />
+              <IncidentTable
+                incidents={incidents}
+                onUpdate={updateStatus}
+                onAssign={assignResponder}
+                respondersList={respondersList}
+              />
             </div>
           </PageSection>
         )}
@@ -427,7 +639,7 @@ function PageSection({ eyebrow, title, subtitle, children }) {
   );
 }
 
-function IncidentTable({ incidents, onUpdate }) {
+function IncidentTable({ incidents, onUpdate, onAssign, respondersList }) {
   return (
     <div className="ad-table-wrap">
       <table className="ad-table">
@@ -439,6 +651,7 @@ function IncidentTable({ incidents, onUpdate }) {
             <th>Priority</th>
             <th>Status</th>
             <th>Update status</th>
+            <th>Assign Responder</th>
           </tr>
         </thead>
         <tbody>
@@ -464,9 +677,33 @@ function IncidentTable({ incidents, onUpdate }) {
                   onChange={(e) => onUpdate(item.id, e.target.value)}
                 >
                   <option>Reported</option>
+                  <option>Assigned</option>
                   <option>On The Way</option>
                   <option>On Scene</option>
                   <option>Resolved</option>
+                </select>
+              </td>
+              <td>
+                <select
+                  aria-label={`Assign responder for ${item.id}`}
+                  value={item.assignedTo || ""}
+                  onChange={(e) => onAssign && onAssign(item.id, e.target.value)}
+                  style={{ fontSize: "0.82rem", padding: "4px 8px" }}
+                >
+                  <option value="">Choose responder...</option>
+                  {respondersList && respondersList.length > 0 ? (
+                    respondersList.map((r) => (
+                      <option key={r.id || r.name} value={r.id || r.name}>
+                        {r.full_name || r.name} ({r.role || "Responder"})
+                      </option>
+                    ))
+                  ) : (
+                    <>
+                      <option value="Aman Sharma">Aman Sharma (Security)</option>
+                      <option value="Priya Singh">Priya Singh (Medical)</option>
+                      <option value="Karan Mehta">Karan Mehta (Fire Safety)</option>
+                    </>
+                  )}
                 </select>
               </td>
             </tr>

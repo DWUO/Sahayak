@@ -131,7 +131,7 @@ export default function App() {
   }, []);
 
   // Fetch real profile from Supabase and route to correct dashboard
-  async function routeUserByProfile(authUser) {
+  async function routeUserByProfile(authUser, preferredRole = null) {
     setUser(authUser);
 
     const { data: userProfile, error: profileError } = await supabase
@@ -146,8 +146,8 @@ export default function App() {
 
     setProfile(userProfile);
 
-    // Route based on database role (never trust client alone)
-    const userRole = (userProfile?.role || "student").toLowerCase();
+    // Prioritize database role; if unavailable, use selected role tab
+    const userRole = (userProfile?.role || preferredRole || role || "student").toLowerCase();
 
     setShowDashboard(false);
     setShowAdminDashboard(false);
@@ -187,7 +187,7 @@ export default function App() {
       }
 
       if (data?.user) {
-        await routeUserByProfile(data.user);
+        await routeUserByProfile(data.user, role);
       }
     } catch (err) {
       console.error("Login error:", err);

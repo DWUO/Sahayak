@@ -1,5 +1,6 @@
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { supabase } from "./supabase_cline";
 import "./StudentDashboard.css";
 import CampusMap from "./CampusMap/CampusMap";
 
@@ -984,15 +985,164 @@ function detectEmergencyFromDescription(description, selectedType) {
 }
 
 
-export default function StudentDashboard() {
+export default function StudentDashboard({ user, profile, onLogout }) {
   const [activePage, setActivePage] = useState("Dashboard");
   const [selectedType, setSelectedType] = useState("Fire");
-  const [selectedZone, setSelectedZone] = useState("A Block");
+  const [selectedZone, setSelectedZone] = useState("a-block");
   const [description, setDescription] = useState("");
-  const [studentName, setStudentName] = useState("Avnish");
+  const [studentName, setStudentName] = useState(
+    profile?.full_name || user?.user_metadata?.full_name || "Student"
+  );
   const [myReports, setMyReports] = useState([]);
+  const [campusLocations, setCampusLocations] = useState([]);
   const [notice, setNotice] = useState("");
   const [submittedEmergency, setSubmittedEmergency] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [showSosModal, setShowSosModal] = useState(false);
+  const [sosSending, setSosSending] = useState(false);
+
+  // 1-Tap SOS Instant Dispatch
+  async function sendInstantSos() {
+    setSosSending(true);
+
+    try {
+      const { data: authData } = await supabase.auth.getUser();
+      const currentUserId = user?.id || authData?.user?.id;
+
+      const locObj = campusLocations.find((l) => l.id === selectedZone);
+      const locName = locObj ? locObj.name : selectedZone || "A Block";
+
+      const { data, error } = await supabase
+        .from("incidents")
+        .insert({
+          reported_by: currentUserId,
+          location_id: selectedZone || "a-block",
+          type: "SOS Panic Alert",
+          description: "🚨 1-TAP SOS PANIC: Immediate campus security & medical dispatch requested by student.",
+          severity: "Urgent",
+          status: "Reported",
+        })
+        .select("*, campus_locations(name)")
+        .single();
+
+      if (error) {
+        setNotice(`SOS failed: ${error.message}`);
+      } else {
+        const newSosReport = {
+          id: data ? `SHY-${data.id.slice(0, 4).toUpperCase()}` : `SHY-SOS`,
+          realId: data?.id,
+          type: "SOS Panic Alert",
+          zone: locName,
+          time: "Just now",
+          priority: "Urgent",
+          status: "Reported",
+          description: "🚨 1-TAP SOS PANIC ALERT dispatched to Campus Security.",
+          icon: "🚨",
+        };
+        setMyReports((prev) => [newSosReport, ...prev]);
+        setShowSosModal(false);
+        setNotice("🚨 PANIC SOS SENT! Campus security and field responders have been dispatched to your location!");
+      }
+    } catch (err) {
+      console.error("SOS dispatch error:", err);
+      setNotice("Could not dispatch SOS. Call emergency services 112 immediately.");
+    } finally {
+      setSosSending(false);
+    }
+  }
+
+  // Sync profile name
+  useEffect(() => {
+    if (profile?.full_name) {
+      setStudentName(profile.full_name);
+    }
+  }, [profile]);
+
+  // Compute initials for avatar
+  const studentInitials = studentName
+    ? studentName
+        .split(" ")
+        .filter(Boolean)
+        .map((n) => n[0])
+        .join("")
+        .toUpperCase()
+        .slice(0, 2) || "ST"
+    : "ST";
+
+  // 1. Fetch campus locations from Supabase
+  useEffect(() => {
+    async function loadLocations() {
+      try {
+        const { data, error } = await supabase
+          .from("campus_locations")
+          .select("*")
+          .order("name", { ascending: true });
+
+        if (!error && data && data.length > 0) {
+          setCampusLocations(data);
+          setSelectedZone(data[0].id);
+        }
+      } catch (err) {
+        console.warn("Could not load campus locations:", err);
+      }
+    }
+
+    loadLocations();
+  }, []);
+
+  // 2. Fetch existing incidents reported by this student
+  async function loadMyReports() {
+    if (!user?.id) return;
+    try {
+      const { data, error } = await supabase
+        .from("incidents")
+        .select("*, campus_locations(name)")
+        .eq("reported_by", user.id)
+        .order("created_at", { ascending: false });
+
+      if (!error && data) {
+        const mapped = data.map((inc) => ({
+          id: `SHY-${inc.id.slice(0, 4).toUpperCase()}`,
+          realId: inc.id,
+          type: inc.type,
+          zone: inc.campus_locations?.name || inc.location_id || "Campus",
+          time: new Date(inc.created_at).toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+          priority: inc.severity || "Urgent",
+          status: inc.status || "Reported",
+          description: inc.description,
+          icon:
+            emergencyTypes.find((item) => item.name === inc.type)?.icon ||
+            "🚨",
+        }));
+        setMyReports(mapped);
+      }
+    } catch (err) {
+      console.warn("Could not load my reports:", err);
+    }
+  }
+
+  useEffect(() => {
+    loadMyReports();
+
+    // Realtime listener for incident status changes
+    const channel = supabase
+      .channel("student-incidents")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "incidents" },
+        () => {
+          loadMyReports();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user]);
 
   const navigation = [
     { name: "Dashboard", icon: "⌂" },
@@ -1000,10 +1150,11 @@ export default function StudentDashboard() {
     { name: "Open Incidents", icon: "◉" },
     { name: "My Reports", icon: "▤" },
     { name: "Safety Guide", icon: "✦" },
-    {name: "Campus Navigation",icon: "📍"}
+    { name: "Campus Navigation", icon: "📍" },
   ];
 
-  function submitReport(event) {
+  // 3. Submit real emergency report into Supabase incidents table
+  async function submitReport(event) {
     event.preventDefault();
 
     if (!description.trim()) {
@@ -1011,29 +1162,71 @@ export default function StudentDashboard() {
       return;
     }
 
-    const report = {
-      id: `SHY-${105 + myReports.length}`,
-      type: selectedType,
-      zone: selectedZone,
-      time: "Just now",
-      priority: "Urgent",
-      status: "Reported",
-      description: description.trim(),
-      icon:
-        emergencyTypes.find((item) => item.name === selectedType)?.icon ||
-        "🚨",
-    };
+    setSubmitting(true);
+    setNotice("Submitting emergency report to campus responders...");
 
-    setMyReports((previous) => [report, ...previous]);
-    setSubmittedEmergency({
-  ...report,
-  instructionType: detectEmergencyFromDescription(
-    report.description,
-    selectedType
-  ),
-});
-    setDescription("");
-    setNotice("Emergency reported. Follow the safety instructions below.");
+    try {
+      const locObj = campusLocations.find((l) => l.id === selectedZone);
+      const locName = locObj ? locObj.name : selectedZone;
+
+      // Ensure we have the user ID
+      const { data: authData } = await supabase.auth.getUser();
+      const currentUserId = user?.id || authData?.user?.id;
+
+      if (!currentUserId) {
+        setNotice("Authentication error: Please log out and log in again.");
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from("incidents")
+        .insert({
+          reported_by: currentUserId,
+          location_id: selectedZone,
+          type: selectedType,
+          description: description.trim(),
+          severity: "Urgent",
+          status: "Reported",
+        })
+        .select("*, campus_locations(name)")
+        .single();
+
+      if (error) {
+        console.error("Supabase insert incident error:", error);
+        setNotice(`Reporting failed: ${error.message}`);
+        return;
+      }
+
+      const report = {
+        id: data ? `SHY-${data.id.slice(0, 4).toUpperCase()}` : `SHY-${105 + myReports.length}`,
+        realId: data?.id,
+        type: selectedType,
+        zone: locName,
+        time: "Just now",
+        priority: "Urgent",
+        status: "Reported",
+        description: description.trim(),
+        icon:
+          emergencyTypes.find((item) => item.name === selectedType)?.icon ||
+          "🚨",
+      };
+
+      setMyReports((previous) => [report, ...previous]);
+      setSubmittedEmergency({
+        ...report,
+        instructionType: detectEmergencyFromDescription(
+          report.description,
+          selectedType
+        ),
+      });
+      setDescription("");
+      setNotice("🚨 Emergency reported successfully! Campus responders have been notified.");
+    } catch (err) {
+      console.error("Error submitting emergency report:", err);
+      setNotice("Something went wrong while reporting. Please try again.");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   function openPage(page) {
@@ -1055,7 +1248,7 @@ export default function StudentDashboard() {
         </div>
 
         <div className="sd-profile">
-          <div className="sd-avatar">AS</div>
+          <div className="sd-avatar">{studentInitials}</div>
           <div>
             <h4>{studentName}</h4>
             <p>Student Account</p>
@@ -1094,9 +1287,35 @@ export default function StudentDashboard() {
           </button>
         </div>
 
-        <div className="sd-sidebar-footer">
-          <span className="sd-footer-dot" />
-          Demo environment
+        <div className="sd-sidebar-footer" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+          <div>
+            <span className="sd-footer-dot" />
+            Demo environment
+          </div>
+          {onLogout && (
+            <button
+              type="button"
+              onClick={onLogout}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "6px",
+                width: "100%",
+                padding: "8px 12px",
+                background: "rgba(239, 68, 68, 0.12)",
+                color: "#f87171",
+                border: "1px solid rgba(239, 68, 68, 0.25)",
+                borderRadius: "8px",
+                cursor: "pointer",
+                fontWeight: "600",
+                fontSize: "0.82rem",
+                marginTop: "4px"
+              }}
+            >
+              Sign Out
+            </button>
+          )}
         </div>
       </aside>
 
@@ -1109,6 +1328,28 @@ export default function StudentDashboard() {
           </div>
 
           <div className="sd-top-actions">
+            <button
+              type="button"
+              onClick={() => setShowSosModal(true)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                padding: "6px 14px",
+                background: "linear-gradient(135deg, #ef4444 0%, #b91c1c 100%)",
+                color: "#ffffff",
+                border: "none",
+                borderRadius: "20px",
+                fontWeight: "800",
+                fontSize: "0.8rem",
+                letterSpacing: "0.4px",
+                cursor: "pointer",
+                boxShadow: "0 0 10px rgba(239, 68, 68, 0.45)",
+                marginRight: "6px"
+              }}
+            >
+              <span>🚨</span> ONE-TAP SOS
+            </button>
             <span className="sd-campus-pill">
               <span /> KRMU Campus
             </span>
@@ -1121,7 +1362,26 @@ export default function StudentDashboard() {
             >
               ♧<span />
             </button>
-            <div className="sd-top-avatar">AS</div>
+            <div className="sd-top-avatar">{studentInitials}</div>
+            {onLogout && (
+              <button
+                type="button"
+                onClick={onLogout}
+                style={{
+                  padding: "6px 12px",
+                  background: "rgba(239, 68, 68, 0.1)",
+                  color: "#dc2626",
+                  border: "1px solid rgba(239, 68, 68, 0.2)",
+                  borderRadius: "6px",
+                  cursor: "pointer",
+                  fontWeight: "600",
+                  fontSize: "0.8rem",
+                  marginLeft: "4px"
+                }}
+              >
+                Logout
+              </button>
+            )}
           </div>
         </header>
 
@@ -1145,12 +1405,35 @@ export default function StudentDashboard() {
                   incidents from one place.
                 </p>
               </div>
-              <button
-                className="sd-primary-button"
-                onClick={() => openPage("Report Emergency")}
-              >
-                <span>＋</span> Report Emergency
-              </button>
+              <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
+                <button
+                  className="sd-primary-button"
+                  onClick={() => openPage("Report Emergency")}
+                >
+                  <span>＋</span> Report Emergency
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowSosModal(true)}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    padding: "12px 20px",
+                    background: "linear-gradient(135deg, #ef4444 0%, #b91c1c 100%)",
+                    color: "#ffffff",
+                    border: "none",
+                    borderRadius: "12px",
+                    fontWeight: "800",
+                    fontSize: "0.92rem",
+                    cursor: "pointer",
+                    boxShadow: "0 4px 14px rgba(239, 68, 68, 0.35)",
+                    transition: "transform 0.15s ease"
+                  }}
+                >
+                  <span>🚨</span> QUICK SOS
+                </button>
+              </div>
               <div className="sd-welcome-decoration">✳</div>
             </section>
 
@@ -1311,20 +1594,27 @@ export default function StudentDashboard() {
                 value={selectedZone}
                 onChange={(event) => setSelectedZone(event.target.value)}
               >
-                <option>A Block</option>
-                <option>B Block</option>
-                <option>C Block</option>
-                <option>D Block</option>
-                <option>Library</option>
-                <option>Hostel North</option>
-                <option>Hostel South</option>
-                <option>Cafeteria</option>
-                <option>Main Gate</option>
-                <option>Parking Area</option>
-                <option>Football Ground</option>
-                <option>Basketball Court</option>
-                <option>Cricket Ground</option>
-                <option>Other</option>
+                {campusLocations.length > 0 ? (
+                  campusLocations.map((loc) => (
+                    <option key={loc.id} value={loc.id}>
+                      {loc.name}
+                    </option>
+                  ))
+                ) : (
+                  <>
+                    <option value="a-block">A Block</option>
+                    <option value="b-block">B Block</option>
+                    <option value="c-block">C Block</option>
+                    <option value="d-block">D Block</option>
+                    <option value="library">Library</option>
+                    <option value="hostel-north">Hostel North</option>
+                    <option value="hostel-south">Hostel South</option>
+                    <option value="cafeteria">Cafeteria</option>
+                    <option value="main-gate">Main Gate</option>
+                    <option value="parking">Parking Area</option>
+                    <option value="sports-ground">Sports Ground</option>
+                  </>
+                )}
               </select>
 
               <label className="sd-field-label" htmlFor="sd-name">
@@ -1357,8 +1647,8 @@ export default function StudentDashboard() {
                 </p>
               </div>
 
-              <button className="sd-primary-button sd-submit-button" type="submit">
-                Submit Demo Report →
+              <button className="sd-primary-button sd-submit-button" type="submit" disabled={submitting}>
+                {submitting ? "Submitting Report..." : "Submit Report →"}
               </button>
                 {submittedEmergency && (
   <div className="sd-immediate-guide">
@@ -1506,6 +1796,122 @@ export default function StudentDashboard() {
           <span>Student Portal · Prototype v1.0</span>
         </footer>
       </main>
+
+      {/* ONE-TAP SOS PANIC MODAL */}
+      {showSosModal && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(15, 23, 42, 0.75)",
+            backdropFilter: "blur(4px)",
+            display: "grid",
+            placeItems: "center",
+            zIndex: 9999,
+            padding: "20px"
+          }}
+        >
+          <div
+            style={{
+              background: "#ffffff",
+              borderRadius: "20px",
+              padding: "32px 28px",
+              maxWidth: "440px",
+              width: "100%",
+              textAlign: "center",
+              boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.35)",
+              animation: "fadeIn 0.2s ease-out"
+            }}
+          >
+            <div style={{ fontSize: "3.5rem", marginBottom: "8px" }}>🚨</div>
+            <h2 style={{ color: "#dc2626", fontWeight: "900", fontSize: "1.5rem", margin: "0 0 8px", letterSpacing: "-0.5px" }}>
+              EMERGENCY SOS PANIC
+            </h2>
+            <p style={{ color: "#4b5563", fontSize: "0.92rem", lineHeight: "1.5", margin: "0 0 20px" }}>
+              This dispatches an immediate high-priority distress signal to Campus Security and all active emergency responders with your location.
+            </p>
+
+            <label style={{ display: "block", textAlign: "left", fontWeight: "700", fontSize: "0.82rem", color: "#374151", marginBottom: "6px" }}>
+              Confirm your campus location:
+            </label>
+            <select
+              value={selectedZone}
+              onChange={(e) => setSelectedZone(e.target.value)}
+              style={{
+                width: "100%",
+                padding: "10px 12px",
+                borderRadius: "10px",
+                border: "1.5px solid #d1d5db",
+                fontSize: "0.92rem",
+                color: "#1f2937",
+                marginBottom: "24px",
+                background: "#f9fafb"
+              }}
+            >
+              {campusLocations && campusLocations.length > 0 ? (
+                campusLocations.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {l.name}
+                  </option>
+                ))
+              ) : (
+                <option value="a-block">A Block</option>
+              )}
+            </select>
+
+            <div style={{ display: "flex", gap: "12px", justifyContent: "center" }}>
+              <button
+                type="button"
+                onClick={() => setShowSosModal(false)}
+                style={{
+                  flex: "1",
+                  padding: "12px 18px",
+                  borderRadius: "10px",
+                  border: "1px solid #d1d5db",
+                  background: "#f3f4f6",
+                  color: "#374151",
+                  fontWeight: "700",
+                  cursor: "pointer",
+                  fontSize: "0.92rem"
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={sendInstantSos}
+                disabled={sosSending}
+                style={{
+                  flex: "1.4",
+                  padding: "12px 18px",
+                  borderRadius: "10px",
+                  border: "none",
+                  background: "linear-gradient(135deg, #ef4444 0%, #b91c1c 100%)",
+                  color: "#ffffff",
+                  fontWeight: "800",
+                  cursor: "pointer",
+                  fontSize: "0.92rem",
+                  boxShadow: "0 4px 14px rgba(239, 68, 68, 0.4)"
+                }}
+              >
+                {sosSending ? "DISPATCHING..." : "DISPATCH SOS 🚨"}
+              </button>
+            </div>
+
+            <div style={{ marginTop: "18px", borderTop: "1px solid #f3f4f6", paddingTop: "14px" }}>
+              <a
+                href="tel:112"
+                style={{ color: "#ef4444", fontSize: "0.85rem", fontWeight: "700", textDecoration: "none" }}
+              >
+                📞 Call Campus Emergency Direct (112)
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
