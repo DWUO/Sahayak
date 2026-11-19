@@ -1,5 +1,5 @@
-
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { supabase } from "./supabase_cline";
 import { validateLogin } from "./login.js";
 import "./App.css";
 import Register from "./Register.jsx";
@@ -83,81 +83,154 @@ export default function App() {
   const [showPassword, setShowPassword] = useState(false);
   const [remember, setRemember] = useState(false);
   const [message, setMessage] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  // Authenticated user & profile state
+  const [user, setUser] = useState(null);
+  const [profile, setProfile] = useState(null);
+
+  // Screen states
   const [showRegister, setShowRegister] = useState(false);
   const [showForgot, setShowForgot] = useState(false);
   const [showDashboard, setShowDashboard] = useState(false);
-  const [showAdminDashboard, setShowAdminDashboard] = useState(false); 
-  const [showResponderDashboard, setShowResponderDashboard] = useState(false); 
+  const [showAdminDashboard, setShowAdminDashboard] = useState(false);
+  const [showResponderDashboard, setShowResponderDashboard] = useState(false);
 
-function handleLogin(event) {
-  event.preventDefault();
+  // Restore session on app load
+  useEffect(() => {
+    async function restoreSession() {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          await routeUserByProfile(session.user);
+        }
+      } catch (err) {
+        console.error("Session restoration error:", err);
+      }
+    }
 
-  const error = validateLogin(username, password);
+    restoreSession();
 
-  if (error) {
-    setMessage(error);
-    return;
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        if (event === "SIGNED_IN" && session?.user) {
+          await routeUserByProfile(session.user);
+        } else if (event === "SIGNED_OUT") {
+          setUser(null);
+          setProfile(null);
+          setShowDashboard(false);
+          setShowAdminDashboard(false);
+          setShowResponderDashboard(false);
+        }
+      }
+    );
+
+    return () => {
+      subscription?.unsubscribe();
+    };
+  }, []);
+
+  // Fetch real profile from Supabase and route to correct dashboard
+  async function routeUserByProfile(authUser) {
+    setUser(authUser);
+
+    const { data: userProfile, error: profileError } = await supabase
+      .from("profiles")
+      .select("*")
+      .eq("id", authUser.id)
+      .single();
+
+    if (profileError) {
+      console.warn("Could not fetch profile:", profileError.message);
+    }
+
+    setProfile(userProfile);
+
+    // Route based on database role (never trust client alone)
+    const userRole = (userProfile?.role || "student").toLowerCase();
+
+    setShowDashboard(false);
+    setShowAdminDashboard(false);
+    setShowResponderDashboard(false);
+
+    if (userRole === "admin" || userRole === "coordinator") {
+      setShowAdminDashboard(true);
+    } else if (userRole === "responder") {
+      setShowResponderDashboard(true);
+    } else {
+      setShowDashboard(true);
+    }
   }
 
-  if (role === "student") {
-    setShowDashboard(true);
-  } else if (role === "admin") {
-    setShowAdminDashboard(true);
-  } else if (role === "responder") {
-    setShowResponderDashboard(true);
+  // Handle Supabase Login
+  async function handleLogin(event) {
+    event.preventDefault();
+    setMessage("");
+
+    const error = validateLogin(username, password);
+    if (error) {
+      setMessage(error);
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const { data, error: authError } = await supabase.auth.signInWithPassword({
+        email: username.trim(),
+        password: password,
+      });
+
+      if (authError) {
+        setMessage(authError.message);
+        return;
+      }
+
+      if (data?.user) {
+        await routeUserByProfile(data.user);
+      }
+    } catch (err) {
+      console.error("Login error:", err);
+      setMessage("An unexpected error occurred. Please try again.");
+    } finally {
+      setLoading(false);
+    }
   }
-}
+
+  // Global Logout handler
+  async function handleLogout() {
+    await supabase.auth.signOut();
+    setUser(null);
+    setProfile(null);
+    setShowDashboard(false);
+    setShowAdminDashboard(false);
+    setShowResponderDashboard(false);
+  }
+
   function showComingSoon(page) {
     setMessage(`${page} is not connected yet.`);
   }
 
+  // Route Screens
   if (showRegister) {
-  return (
-    <Register
-      onBack={() => setShowRegister(false)}
-    />
-  );
-}
+    return <Register onBack={() => setShowRegister(false)} />;
+  }
 
-if (showForgot) {
-  return (
-    <ForgotPassword
-      onBack={() => setShowForgot(false)}
-    />
-  );
-}
+  if (showForgot) {
+    return <ForgotPassword onBack={() => setShowForgot(false)} />;
+  }
 
-if (showDashboard) {
-  return <StudentDashboard />;
-}
+  if (showDashboard) {
+    return <StudentDashboard user={user} profile={profile} onLogout={handleLogout} />;
+  }
 
-if (showRegister) {
-  return <Register onBack={() => setShowRegister(false)} />;
-}
+  if (showAdminDashboard) {
+    return <AdminDashboard user={user} profile={profile} onLogout={handleLogout} />;
+  }
 
-if (showForgot) {
-  return <ForgotPassword onBack={() => setShowForgot(false)} />;
-}
-
-if (showDashboard) {
-  return <StudentDashboard />;
-}
-
-if (showAdminDashboard) {
-  return <AdminDashboard />;
-}
-
-if (showDashboard) {
-  return <StudentDashboard />;
-}
-
-if (showAdminDashboard) {
-  return <AdminDashboard />;
-}
-
-if (showResponderDashboard) {
-  return <ResponderDashboard />;
-}
+  if (showResponderDashboard) {
+    return <ResponderDashboard user={user} profile={profile} onLogout={handleLogout} />;
+  }
 
   return (
     <main className="login-page">
@@ -286,6 +359,7 @@ if (showResponderDashboard) {
                 }}
                 autoComplete="username"
                 aria-label="Email or Username"
+                required
               />
             </label>
 
@@ -301,6 +375,7 @@ if (showResponderDashboard) {
                 }}
                 autoComplete="current-password"
                 aria-label="Password"
+                required
               />
 
               <button
@@ -332,8 +407,8 @@ if (showResponderDashboard) {
               </button>
             </div>
 
-            <button type="submit" className="login-button">
-              Login <Icon type="arrow" size={20} />
+            <button type="submit" className="login-button" disabled={loading}>
+              {loading ? "Signing in..." : "Login"} <Icon type="arrow" size={20} />
             </button>
           </form>
 
