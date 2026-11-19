@@ -1167,7 +1167,7 @@ export default function StudentDashboard({ user, profile, onLogout }) {
     { name: "Safety Guide", icon: "✦" },
     { name: "Campus Navigation", icon: "📍" },
   ];
-
+  
   // 3. Submit real emergency report into Supabase incidents table
   async function submitReport(event) {
     event.preventDefault();
