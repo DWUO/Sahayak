@@ -990,9 +990,10 @@ export default function StudentDashboard({ user, profile, onLogout }) {
   const [selectedType, setSelectedType] = useState("Fire");
   const [selectedZone, setSelectedZone] = useState("a-block");
   const [description, setDescription] = useState("");
-  const [studentName, setStudentName] = useState(
-    profile?.full_name || user?.user_metadata?.full_name || "Student"
-  );
+  const studentName =
+  profile?.full_name ||
+  user?.user_metadata?.full_name ||
+  "Student";
   const [myReports, setMyReports] = useState([]);
   const [campusLocations, setCampusLocations] = useState([]);
   const [notice, setNotice] = useState("");
@@ -1051,12 +1052,7 @@ export default function StudentDashboard({ user, profile, onLogout }) {
     }
   }
 
-  // Sync profile name
-  useEffect(() => {
-    if (profile?.full_name) {
-      setStudentName(profile.full_name);
-    }
-  }, [profile]);
+
 
   // Compute initials for avatar
   const studentInitials = studentName
@@ -1125,7 +1121,7 @@ export default function StudentDashboard({ user, profile, onLogout }) {
   }
 
   useEffect(() => {
-    loadMyReports();
+    Promise.resolve().then(() => loadMyReports());
 
     // Realtime listener for incident status changes
     const channel = supabase
