@@ -67,64 +67,89 @@ export default function ResponderDashboard({ user, profile, onLogout }) {
     .slice(0, 2) || "RS";
 
   // 1. Fetch live assigned & reported incidents from Supabase
-  async function loadResponderTasks() {
-    try {
-      const { data, error } = await supabase
-        .from("incidents")
-        .select(`
-          id,
-          type,
-          description,
-          severity,
-          status,
-          created_at,
-          location_id,
-          campus_locations(name),
-          profiles:reported_by(full_name, email)
-        `)
-        .order("created_at", { ascending: false });
+ async function loadResponderTasks() {
+  try {
+    const { data, error } = await supabase
+      .from("incidents")
+      .select(`
+        id,
+        type,
+        description,
+        severity,
+        status,
+        created_at,
+        location_id,
+        campus_locations(name),
+        profiles:reported_by(full_name, email)
+      `)
+      .order("created_at", { ascending: false });
 
-      if (!error && data && data.length > 0) {
-        const mapped = data.map((inc) => ({
-          id: `SHY-${inc.id.slice(0, 4).toUpperCase()}`,
-          realId: inc.id,
-          type: inc.type || "General Emergency",
-          location: inc.campus_locations?.name || inc.location_id || "Campus",
-          reporter: inc.profiles?.full_name || inc.profiles?.email || "Student",
-          time: new Date(inc.created_at).toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-          }),
-          priority: inc.severity || "Urgent",
-          status: inc.status === "Reported" ? "Assigned" : inc.status || "Assigned",
-          description: inc.description || "Emergency reported on campus.",
-        }));
-        setTasks(mapped);
-      }
-    } catch (err) {
-      console.warn("Could not load responder tasks from Supabase:", err);
-    }
+    if (error) throw error;
+
+    const mapped = (data || []).map((inc) => ({
+      id: `SHY-${inc.id.slice(0, 4).toUpperCase()}`,
+      realId: inc.id,
+      type: inc.type || "General Emergency",
+      location: inc.campus_locations?.name || inc.location_id || "Campus",
+      reporter:
+        inc.profiles?.full_name ||
+        inc.profiles?.email ||
+        "Student",
+      time: new Date(inc.created_at).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+      priority: inc.severity || "Urgent",
+      status:
+        inc.status === "Reported"
+          ? "Assigned"
+          : inc.status || "Assigned",
+      description:
+        inc.description || "Emergency reported on campus.",
+    }));
+
+    return mapped;
+  } catch (err) {
+    console.warn("Could not load responder tasks:", err);
+    return null;
   }
+}
 
-  useEffect(() => {
-    loadResponderTasks();
+ useEffect(() => {
+  let isMounted = true;
 
-    // Realtime listener for incoming assignments
-    const channel = supabase
-      .channel("responder-incidents")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "incidents" },
-        () => {
-          loadResponderTasks();
-        }
-      )
-      .subscribe();
+  const refreshTasks = async () => {
+    const mapped = await loadResponderTasks();
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, []);
+    if (isMounted && mapped !== null) {
+      setTasks(mapped);
+    }
+  };
+
+  // Initial tasks loading
+  refreshTasks();
+
+  // Realtime listener for incoming assignments
+  const channel = supabase
+    .channel("responder-incidents")
+    .on(
+      "postgres_changes",
+      {
+        event: "*",
+        schema: "public",
+        table: "incidents",
+      },
+      () => {
+        refreshTasks();
+      }
+    )
+    .subscribe();
+
+  return () => {
+    isMounted = false;
+    supabase.removeChannel(channel);
+  };
+}, []);
 
   const pending = tasks.filter(
     (task) => task.status !== "Resolved"
