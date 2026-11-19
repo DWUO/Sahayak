@@ -330,8 +330,8 @@ const immediateInstructions = {
     avoid:
       "Do not repair, clean, move or investigate an unknown hazard yourself."
   },
-   
-    allergicReaction: {
+
+  allergicReaction: {
     heading: "Severe Allergic Reaction",
     alert:
       "A severe allergic reaction can become life-threatening. Call 112 immediately.",
@@ -651,7 +651,7 @@ const immediateInstructions = {
 function detectEmergencyFromDescription(description, selectedType) {
   const text = description.toLowerCase();
 
-    if (
+  if (
     text.includes("allergic") ||
     text.includes("allergy") ||
     text.includes("face swelling") ||
@@ -990,10 +990,11 @@ export default function StudentDashboard({ user, profile, onLogout }) {
   const [selectedType, setSelectedType] = useState("Fire");
   const [selectedZone, setSelectedZone] = useState("a-block");
   const [description, setDescription] = useState("");
-  const studentName =
-  profile?.full_name ||
-  user?.user_metadata?.full_name ||
-  "Student";
+  const [studentName, setStudentName] = useState(
+    profile?.full_name ||
+    user?.user_metadata?.full_name ||
+    "Student"
+  );
   const [myReports, setMyReports] = useState([]);
   const [campusLocations, setCampusLocations] = useState([]);
   const [notice, setNotice] = useState("");
@@ -1057,12 +1058,12 @@ export default function StudentDashboard({ user, profile, onLogout }) {
   // Compute initials for avatar
   const studentInitials = studentName
     ? studentName
-        .split(" ")
-        .filter(Boolean)
-        .map((n) => n[0])
-        .join("")
-        .toUpperCase()
-        .slice(0, 2) || "ST"
+      .split(" ")
+      .filter(Boolean)
+      .map((n) => n[0])
+      .join("")
+      .toUpperCase()
+      .slice(0, 2) || "ST"
     : "ST";
 
   // 1. Fetch campus locations from Supabase
@@ -1568,9 +1569,8 @@ export default function StudentDashboard({ user, profile, onLogout }) {
                   <button
                     key={item.name}
                     type="button"
-                    className={`sd-emergency-card ${item.color} ${
-                      selectedType === item.name ? "selected" : ""
-                    }`}
+                    className={`sd-emergency-card ${item.color} ${selectedType === item.name ? "selected" : ""
+                      }`}
                     onClick={() => setSelectedType(item.name)}
                   >
                     <span className="sd-emergency-icon">{item.icon}</span>
@@ -1646,52 +1646,52 @@ export default function StudentDashboard({ user, profile, onLogout }) {
               <button className="sd-primary-button sd-submit-button" type="submit" disabled={submitting}>
                 {submitting ? "Submitting Report..." : "Submit Report →"}
               </button>
-                {submittedEmergency && (
-  <div className="sd-immediate-guide">
-    <div className="sd-guide-title">
-      <span>🚨</span>
+              {submittedEmergency && (
+                <div className="sd-immediate-guide">
+                  <div className="sd-guide-title">
+                    <span>🚨</span>
 
-      <div>
-        <h2>Immediate Safety Instructions</h2>
-        <p>
-          Follow these basic safety steps while help is on the way.
-        </p>
-      </div>
-    </div>
+                    <div>
+                      <h2>Immediate Safety Instructions</h2>
+                      <p>
+                        Follow these basic safety steps while help is on the way.
+                      </p>
+                    </div>
+                  </div>
 
-    <div className="sd-guide-alert">
-      {immediateInstructions[submittedEmergency.instructionType].alert}
-    </div>
+                  <div className="sd-guide-alert">
+                    {immediateInstructions[submittedEmergency.instructionType].alert}
+                  </div>
 
-    <h3>
-       {immediateInstructions[submittedEmergency.instructionType].heading}
-    </h3>
+                  <h3>
+                    {immediateInstructions[submittedEmergency.instructionType].heading}
+                  </h3>
 
-    <ol>
-       {immediateInstructions[submittedEmergency.instructionType].steps.map(
-        (step, index) => (
-          <li key={index}>{step}</li>
-        )
-      )}
-    </ol>
+                  <ol>
+                    {immediateInstructions[submittedEmergency.instructionType].steps.map(
+                      (step, index) => (
+                        <li key={index}>{step}</li>
+                      )
+                    )}
+                  </ol>
 
-    <div className="sd-guide-avoid">
-      <strong>⚠️ Do not:</strong>
-      <p>
-        {immediateInstructions[submittedEmergency.instructionType].avoid}
-      </p>
-    </div>
+                  <div className="sd-guide-avoid">
+                    <strong>⚠️ Do not:</strong>
+                    <p>
+                      {immediateInstructions[submittedEmergency.instructionType].avoid}
+                    </p>
+                  </div>
 
-    <a className="sd-emergency-call" href="tel:112">
-      📞 Call Emergency Number 112
-    </a>
+                  <a className="sd-emergency-call" href="tel:112">
+                    📞 Call Emergency Number 112
+                  </a>
 
-    <p className="sd-guide-disclaimer">
-      These are basic safety prompts. Follow instructions from
-      emergency operators, campus security and trained responders.
-    </p>
-  </div>
-)}
+                  <p className="sd-guide-disclaimer">
+                    These are basic safety prompts. Follow instructions from
+                    emergency operators, campus security and trained responders.
+                  </p>
+                </div>
+              )}
             </form>
           </section>
         )}
@@ -1781,11 +1781,11 @@ export default function StudentDashboard({ user, profile, onLogout }) {
           </section>
         )}
 
-            {activePage === "Campus Navigation" && (
-  <section className="sd-page-content">
-    <CampusMap />
-  </section>
-)}
+        {activePage === "Campus Navigation" && (
+          <section className="sd-page-content">
+            <CampusMap />
+          </section>
+        )}
 
         <footer className="sd-footer">
           <span>© 2026 Sahayak Campus Safety</span>
